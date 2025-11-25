@@ -1,16 +1,18 @@
+
 import React, { useState, useEffect, useCallback } from 'react';
 import Navbar from './components/Navbar';
 import GlassCard from './components/GlassCard';
 import MediaDetails from './components/MediaDetails';
 import SettingsModal from './components/SettingsModal';
 import AuthModal from './components/AuthModal';
+import HeroSlider from './components/HeroSlider';
 import FilterBar, { SortType, SortOrder } from './components/FilterBar';
-import { fetchTrending, searchMulti, fetchMediaDetails, fetchSeasonDetails } from './services/tmdbService';
+import { fetchTrending, searchMulti, fetchMediaDetails, fetchSeasonDetails, fetchDiscoverContent, fetchTrendingByType } from './services/tmdbService';
 import { getRecommendations } from './services/geminiService';
 import { authService } from './services/authService';
-import { TMDBResult, CollectionItem, CollectionStatus, AIRecommendation, MediaDetails as MediaDetailsType, AgendaEvent, User, Language } from './types';
+import { TMDBResult, CollectionItem, CollectionStatus, AIRecommendation, MediaDetails as MediaDetailsType, AgendaEvent, User, Language, DiscoverFilter, OriginCountry, DiscoverMediaType } from './types';
 import { translations, getTMDBLocale } from './utils/i18n';
-import { X, Search, Sparkles, Loader2, Calendar, Clock } from 'lucide-react';
+import { X, Search, Sparkles, Loader2, Calendar, Clock, SlidersHorizontal, ChevronDown, Info, Film } from 'lucide-react';
 
 const App: React.FC = () => {
   // User State
@@ -24,7 +26,12 @@ const App: React.FC = () => {
   const t = translations[language];
 
   const [activeTab, setActiveTab] = useState('discover');
-  const [trending, setTrending] = useState<TMDBResult[]>([]);
+  
+  // Discover Tab State
+  const [heroItems, setHeroItems] = useState<TMDBResult[]>([]);
+  const [popularItems, setPopularItems] = useState<TMDBResult[]>([]);
+  const [discoverFilter, setDiscoverFilter] = useState<DiscoverFilter>({ type: 'movie', country: null });
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
   
   // Collection State (Initially empty until loaded from local or user)
   const [collection, setCollection] = useState<CollectionItem[]>([]);
@@ -33,7 +40,7 @@ const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   
-  // Filter & Sort State
+  // Filter & Sort State (Collection tabs)
   const [sortBy, setSortBy] = useState<SortType>('dateAdded');
   const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
   const [gridColumns, setGridColumns] = useState<number>(5);
@@ -57,13 +64,20 @@ const App: React.FC = () => {
 
   // Initialization Effect: Check session and load initial data
   useEffect(() => {
-    // 1. Load Trending
-    const loadTrending = async () => {
+    // 1. Load Trending/Discover Data
+    const loadDiscoverData = async () => {
       const tmdbLocale = getTMDBLocale(language);
-      const data = await fetchTrending(tmdbLocale);
-      setTrending(data);
+      
+      // Fetch Trending for Hero Slider (Random 4)
+      const trendingData = await fetchTrending(tmdbLocale);
+      const shuffled = [...trendingData].sort(() => 0.5 - Math.random());
+      setHeroItems(shuffled.slice(0, 4));
+
+      // Fetch Initial Trending Today Content (instead of generic popular)
+      const popularData = await fetchTrendingByType('movie', 'day', tmdbLocale);
+      setPopularItems(popularData);
     };
-    loadTrending();
+    loadDiscoverData();
 
     // 2. Check for User Session
     const sessionUser = authService.checkSession();
@@ -77,7 +91,25 @@ const App: React.FC = () => {
         setCollection(JSON.parse(guestData));
       }
     }
-  }, [language]); // Reload trending when language changes
+  }, [language]);
+
+  // Effect: Refetch popular/trending items when filters change
+  useEffect(() => {
+     const updatePopular = async () => {
+         const tmdbLocale = getTMDBLocale(language);
+         let data = [];
+         
+         // If a specific country is selected, we must use Discover API (Sort by popularity)
+         if (discoverFilter.country) {
+             data = await fetchDiscoverContent(discoverFilter.type, discoverFilter.country, tmdbLocale);
+         } else {
+             // If no country selected, use Trending Today API (Daily Trends)
+             data = await fetchTrendingByType(discoverFilter.type, 'day', tmdbLocale);
+         }
+         setPopularItems(data);
+     };
+     updatePopular();
+  }, [discoverFilter, language]);
 
   // Persistence Effect: Save collection when it changes
   useEffect(() => {
@@ -90,7 +122,7 @@ const App: React.FC = () => {
       // If guest, save to generic local storage
       localStorage.setItem('glassflix_collection', JSON.stringify(collection));
     }
-  }, [collection, user?.username]); // Only re-run if collection changes, or username changes
+  }, [collection, user?.username]);
 
   // Auth Handlers
   const handleLogin = (loggedInUser: User) => {
@@ -102,7 +134,6 @@ const App: React.FC = () => {
   const handleLogout = () => {
     setUser(null);
     authService.clearSession();
-    // Switch back to guest data
     const guestData = localStorage.getItem('glassflix_collection');
     setCollection(guestData ? JSON.parse(guestData) : []);
     setActiveTab('discover');
@@ -123,7 +154,7 @@ const App: React.FC = () => {
     }, 500);
 
     return () => clearTimeout(delayDebounceFn);
-  }, [searchQuery, language]); // Re-search if language changes
+  }, [searchQuery, language]);
 
   // Handle Collection Actions
   const handleAction = async (itemOrDetails: TMDBResult | MediaDetailsType, action: CollectionStatus | 'remove') => {
@@ -137,7 +168,6 @@ const App: React.FC = () => {
     const mediaType = itemOrDetails.media_type || (itemOrDetails.title ? 'movie' : 'tv');
     const today = new Date().toLocaleDateString('en-CA');
 
-    // 1. Optimistic Add/Update
     setCollection(prev => {
         const existing = prev.find(i => i.id === id);
         const baseItem = existing || { ...(itemOrDetails as TMDBResult), addedAt: Date.now(), media_type: mediaType };
@@ -153,13 +183,11 @@ const App: React.FC = () => {
         return [...prev, updatedItem];
     });
 
-    // 2. Background Fetch for Agenda Events
     if (action === 'watchlist') {
         try {
             let events: AgendaEvent[] = [];
             const tmdbLocale = getTMDBLocale(language);
             
-            // Case A: Movie
             if (mediaType === 'movie') {
                 const releaseDate = (itemOrDetails as any).release_date;
                 if (releaseDate && releaseDate >= today) {
@@ -169,19 +197,14 @@ const App: React.FC = () => {
                         overview: itemOrDetails.overview
                     });
                 }
-            } 
-            // Case B: TV Show
-            else if (mediaType === 'tv') {
-                // We need full details to get next_episode_to_air
+            } else if (mediaType === 'tv') {
                 let details = itemOrDetails as MediaDetailsType;
-                // Fetch details if missing (e.g. added from grid)
                 if (!('next_episode_to_air' in details) || !details.seasons) {
                    const fetched = await fetchMediaDetails(id, 'tv', tmdbLocale);
                    if (fetched) details = fetched;
                 }
 
                 if (details.next_episode_to_air) {
-                    // Get the season of the next episode to find ALL remaining episodes
                     const seasonNum = details.next_episode_to_air.season_number;
                     const seasonData = await fetchSeasonDetails(id, seasonNum, tmdbLocale);
                     
@@ -197,7 +220,6 @@ const App: React.FC = () => {
                 }
             }
 
-            // Update Collection with Events
             if (events.length > 0) {
                 setCollection(prev => prev.map(item => {
                     if (item.id === id) {
@@ -206,14 +228,12 @@ const App: React.FC = () => {
                     return item;
                 }));
             }
-
         } catch (err) {
             console.error("Failed to fetch agenda events:", err);
         }
     }
   };
 
-  // Generate AI Recommendations
   const generateRecommendations = async () => {
     setIsGeneratingAI(true);
     const seenTitles = collection
@@ -229,18 +249,12 @@ const App: React.FC = () => {
 
   const getFilteredCollection = (status: CollectionStatus) => {
     let items = collection.filter(item => item.status === status);
-
-    // Sorting Logic
     items.sort((a, b) => {
       let comparison = 0;
       switch (sortBy) {
-        case 'dateAdded':
-          comparison = (a.addedAt || 0) - (b.addedAt || 0);
-          break;
-        case 'rating':
-          comparison = (a.vote_average || 0) - (b.vote_average || 0);
-          break;
-        case 'title':
+        case 'dateAdded': comparison = (a.addedAt || 0) - (b.addedAt || 0); break;
+        case 'rating': comparison = (a.vote_average || 0) - (b.vote_average || 0); break;
+        case 'title': 
           const titleA = a.title || a.name || '';
           const titleB = b.title || b.name || '';
           comparison = titleA.localeCompare(titleB);
@@ -253,50 +267,29 @@ const App: React.FC = () => {
       }
       return sortOrder === 'asc' ? comparison : -comparison;
     });
-
     return items;
   };
 
-  // Helper to flatten all events for the agenda view
   const getAllAgendaEvents = () => {
     const today = new Date().toLocaleDateString('en-CA');
-    let events: { 
-        uniqueId: string;
-        item: CollectionItem;
-        event: AgendaEvent 
-    }[] = [];
+    let events: { uniqueId: string; item: CollectionItem; event: AgendaEvent }[] = [];
 
     collection.forEach(item => {
         if (item.status !== 'watchlist') return;
-
-        // Modern multiple events
         if (item.agendaEvents && item.agendaEvents.length > 0) {
             item.agendaEvents.forEach(event => {
                 if (event.date >= today) {
-                    events.push({
-                        uniqueId: `${item.id}-${event.date}-${event.title}`,
-                        item: item,
-                        event: event
-                    });
+                    events.push({ uniqueId: `${item.id}-${event.date}-${event.title}`, item: item, event: event });
                 }
             });
-        } 
-        // Legacy/Fallback single event
-        else if (item.agendaDate && item.agendaDate >= today) {
+        } else if (item.agendaDate && item.agendaDate >= today) {
             events.push({
                 uniqueId: `${item.id}-${item.agendaDate}`,
                 item: item,
-                event: {
-                    date: item.agendaDate,
-                    title: item.agendaTitle || 'Upcoming',
-                    episodeTitle: item.title || item.name,
-                    overview: item.overview
-                }
+                event: { date: item.agendaDate, title: item.agendaTitle || 'Upcoming', episodeTitle: item.title || item.name, overview: item.overview }
             });
         }
     });
-
-    // Sort by Date
     return events.sort((a, b) => a.event.date.localeCompare(b.event.date));
   };
 
@@ -304,7 +297,6 @@ const App: React.FC = () => {
     setSelectedMedia(item);
   };
 
-  // Get Grid Classes dynamically based on setting
   const getGridClass = () => {
     switch (gridColumns) {
         case 2: return 'grid-cols-2 sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-2';
@@ -315,17 +307,74 @@ const App: React.FC = () => {
     }
   };
 
-  // Render Logic
   const renderContent = () => {
     if (activeTab === 'discover') {
       return (
         <div className="animate-fade-in">
-          <div className="mb-8 relative">
-            <h2 className="text-3xl font-bold mb-2 bg-clip-text text-transparent bg-gradient-to-r from-blue-300 via-purple-300 to-white drop-shadow-sm">{t.trending}</h2>
-            <p className="text-gray-400 text-sm">{t.trendingSub}</p>
+          {/* Hero Slider */}
+          <HeroSlider 
+             items={heroItems} 
+             onClick={handleCardClick}
+             language={language}
+          />
+
+          {/* Popular Section Header with Filters */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
+             <div className="relative">
+                <h2 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-300 via-purple-300 to-white drop-shadow-sm">
+                   {t.trendingToday}
+                </h2>
+                <p className="text-gray-400 text-sm">{discoverFilter.country ? t.trendingSub : t.trendingSubDay}</p>
+             </div>
+
+             <div className="flex flex-col sm:flex-row gap-4 bg-white/5 p-2 rounded-2xl border border-white/5">
+                 {/* Media Type Toggle */}
+                 <div className="flex bg-black/30 p-1 rounded-xl">
+                     {(['movie', 'tv'] as DiscoverMediaType[]).map(type => (
+                         <button
+                            key={type}
+                            onClick={() => setDiscoverFilter(prev => ({ ...prev, type }))}
+                            className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${discoverFilter.type === type ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
+                         >
+                            {type === 'movie' ? t.movies : t.series}
+                         </button>
+                     ))}
+                 </div>
+
+                 {/* Country Select (Toggle Button) */}
+                 <div className="relative">
+                     <button
+                        onClick={() => setIsFilterOpen(!isFilterOpen)}
+                        className="h-full px-4 py-2 bg-white/10 hover:bg-white/20 rounded-xl flex items-center gap-2 text-sm font-bold text-white transition-colors"
+                     >
+                        <SlidersHorizontal size={16} />
+                        <span className="hidden sm:inline">
+                             {discoverFilter.country === 'FR' ? t.france : 
+                              discoverFilter.country === 'KR' ? t.southKorea : 
+                              discoverFilter.country === 'US' ? t.usa : 
+                              discoverFilter.country === 'GB' ? t.uk : 
+                              t.allCountries}
+                        </span>
+                        <ChevronDown size={14} className={`transition-transform ${isFilterOpen ? 'rotate-180' : ''}`} />
+                     </button>
+                     
+                     {/* Country Dropdown/Pills */}
+                     {isFilterOpen && (
+                         <div className="absolute top-full right-0 mt-2 p-2 bg-[#1a202c]/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl z-20 min-w-[180px] animate-in fade-in zoom-in-95 origin-top-right flex flex-col gap-1">
+                             <button onClick={() => { setDiscoverFilter(prev => ({...prev, country: null})); setIsFilterOpen(false); }} className={`px-3 py-2 text-left rounded-lg text-sm ${!discoverFilter.country ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-white/10'}`}>{t.allCountries}</button>
+                             <button onClick={() => { setDiscoverFilter(prev => ({...prev, country: 'FR'})); setIsFilterOpen(false); }} className={`px-3 py-2 text-left rounded-lg text-sm ${discoverFilter.country === 'FR' ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-white/10'}`}>{t.france}</button>
+                             <button onClick={() => { setDiscoverFilter(prev => ({...prev, country: 'KR'})); setIsFilterOpen(false); }} className={`px-3 py-2 text-left rounded-lg text-sm ${discoverFilter.country === 'KR' ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-white/10'}`}>{t.southKorea}</button>
+                             <button onClick={() => { setDiscoverFilter(prev => ({...prev, country: 'US'})); setIsFilterOpen(false); }} className={`px-3 py-2 text-left rounded-lg text-sm ${discoverFilter.country === 'US' ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-white/10'}`}>{t.usa}</button>
+                             <button onClick={() => { setDiscoverFilter(prev => ({...prev, country: 'GB'})); setIsFilterOpen(false); }} className={`px-3 py-2 text-left rounded-lg text-sm ${discoverFilter.country === 'GB' ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-white/10'}`}>{t.uk}</button>
+                         </div>
+                     )}
+                 </div>
+             </div>
           </div>
+
+          {/* Grid */}
           <div className={`grid gap-6 ${getGridClass()}`}>
-            {trending.map(item => (
+            {popularItems.map(item => (
               <GlassCard
                 key={item.id}
                 item={item}
@@ -344,7 +393,6 @@ const App: React.FC = () => {
     if (activeTab === 'watchlist' || activeTab === 'seen') {
       const items = getFilteredCollection(activeTab as CollectionStatus);
       const title = activeTab === 'watchlist' ? t.toWatch : t.seen;
-      
       return (
         <div className="animate-fade-in">
           <div className="mb-4">
@@ -352,7 +400,6 @@ const App: React.FC = () => {
             <p className="text-gray-400 text-sm mb-6">
                 {items.length === 0 ? (activeTab === 'watchlist' ? t.emptyWatchlist : t.emptySeen) : `${items.length} ${t.itemsCollected}`}
             </p>
-            
             <FilterBar 
                 sortBy={sortBy}
                 setSortBy={setSortBy}
@@ -363,7 +410,6 @@ const App: React.FC = () => {
                 language={language}
             />
           </div>
-
           {items.length > 0 ? (
             <div className={`grid gap-6 ${getGridClass()}`}>
               {items.map(item => (
@@ -380,7 +426,7 @@ const App: React.FC = () => {
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center py-20 text-gray-500 bg-white/5 rounded-2xl border border-white/5 backdrop-blur-sm">
-              <FilmIcon className="w-16 h-16 mb-4 opacity-50" />
+              <Film className="w-16 h-16 mb-4 opacity-50" />
               <p>{t.startAdding}</p>
             </div>
           )}
@@ -411,10 +457,8 @@ const App: React.FC = () => {
                 ) : (
                     <div className="space-y-6 relative">
                         <div className="absolute left-8 top-4 bottom-4 w-0.5 bg-white/10 hidden sm:block"></div>
-
                         {agendaEvents.map(({ uniqueId, item, event }) => {
                             const date = new Date(event.date);
-                            // Locale aware dates
                             const locale = language === 'fr' ? 'fr-FR' : 'en-US';
                             const day = date.toLocaleDateString(locale, { day: 'numeric', timeZone: 'UTC' });
                             const month = date.toLocaleDateString(locale, { month: 'short', timeZone: 'UTC' });
@@ -423,31 +467,22 @@ const App: React.FC = () => {
 
                             return (
                                 <div key={uniqueId} className="relative flex gap-6 group cursor-pointer" onClick={() => handleCardClick(item)}>
-                                     {/* Date Bubble */}
                                     <div className="hidden sm:flex flex-col items-center justify-center w-16 h-16 bg-[#111827] border border-indigo-500/30 rounded-2xl shadow-lg z-10 shrink-0 group-hover:border-indigo-400 transition-colors">
                                         <span className="text-xs font-bold text-indigo-400 uppercase">{month}</span>
                                         <span className="text-xl font-bold text-white">{day}</span>
                                     </div>
-
-                                    {/* Content Card */}
                                     <div className="flex-1 bg-white/5 hover:bg-white/10 border border-white/10 p-5 rounded-xl backdrop-blur-md transition-all hover:translate-x-2 flex gap-4 items-center overflow-hidden">
-                                        {/* Image */}
                                         <div className="w-16 h-24 bg-gray-800 rounded-lg shrink-0 overflow-hidden border border-white/10">
                                             <img src={`https://image.tmdb.org/t/p/w200${item.poster_path}`} className="w-full h-full object-cover" alt="" />
                                         </div>
-                                        
                                         <div className="min-w-0">
                                             <div className="flex items-center gap-2 mb-1 sm:hidden">
                                                 <span className="text-xs font-bold text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded">{fullDate}</span>
                                             </div>
                                             <h3 className="text-lg font-bold text-white truncate">{item.title || item.name}</h3>
                                             <div className="flex items-center gap-2 text-sm text-gray-300 mt-1">
-                                                <span className="px-2 py-0.5 bg-white/10 rounded text-xs border border-white/10 whitespace-nowrap">
-                                                    {event.title}
-                                                </span>
-                                                {event.episodeTitle && (
-                                                    <span className="text-indigo-200 italic truncate hidden md:inline">"{event.episodeTitle}"</span>
-                                                )}
+                                                <span className="px-2 py-0.5 bg-white/10 rounded text-xs border border-white/10 whitespace-nowrap">{event.title}</span>
+                                                {event.episodeTitle && <span className="text-indigo-200 italic truncate hidden md:inline">"{event.episodeTitle}"</span>}
                                                 <span className="text-gray-500 hidden sm:inline">•</span>
                                                 <span className="text-gray-400 text-xs hidden sm:inline">{weekday}</span>
                                             </div>
@@ -464,7 +499,7 @@ const App: React.FC = () => {
     }
 
     if (activeTab === 'ai') {
-        const seenCount = collection.filter(c => c.status === 'seen').length;
+       const seenCount = collection.filter(c => c.status === 'seen').length;
         
         return (
             <div className="max-w-4xl mx-auto animate-fade-in">
@@ -492,51 +527,54 @@ const App: React.FC = () => {
                             <div className="text-center">
                                 <button 
                                     onClick={generateRecommendations}
-                                    className="px-8 py-4 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-xl font-bold shadow-lg shadow-purple-900/40 transform hover:scale-105 transition-all flex items-center gap-3 mx-auto"
+                                    className="px-8 py-4 bg-gradient-to-r from-purple-600 to-pink-600 rounded-full font-bold text-white shadow-lg hover:shadow-purple-500/30 transition-all hover:scale-105 flex items-center gap-2 mx-auto"
                                 >
-                                    <Sparkles size={20} />
-                                    {t.generate}
+                                    <Sparkles size={20} /> {t.generate}
                                 </button>
                             </div>
                         )}
 
                         {isGeneratingAI && (
                             <div className="flex flex-col items-center justify-center py-12">
-                                <Loader2 size={40} className="animate-spin text-purple-400 mb-4" />
+                                <Loader2 size={48} className="text-purple-400 animate-spin mb-4" />
                                 <p className="text-purple-200 animate-pulse">{t.consulting}</p>
                             </div>
                         )}
 
-                        {recommendations.length > 0 && !isGeneratingAI && (
-                            <div className="grid gap-4">
-                                <div className="flex justify-between items-center mb-2">
-                                    <h3 className="text-xl font-bold text-white">{t.topPicks}</h3>
-                                    <button 
-                                        onClick={generateRecommendations}
-                                        className="text-sm text-purple-300 hover:text-white flex items-center gap-1"
-                                    >
+                        {recommendations.length > 0 && (
+                            <div className="animate-fade-in">
+                                <div className="flex justify-between items-center mb-6">
+                                    <h3 className="text-2xl font-bold text-white">{t.topPicks}</h3>
+                                    <button onClick={generateRecommendations} className="text-sm text-purple-300 hover:text-white flex items-center gap-1">
                                         <Sparkles size={14} /> {t.refresh}
                                     </button>
                                 </div>
-                                {recommendations.map((rec, idx) => (
-                                    <div key={idx} className="bg-white/5 hover:bg-white/10 border border-white/10 p-5 rounded-xl backdrop-blur-md transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                                        <div>
-                                            <h4 className="text-lg font-bold text-white mb-1 flex items-center gap-2">
-                                                {rec.title}
-                                            </h4>
-                                            <p className="text-sm text-purple-200/80 italic">"{rec.reason}"</p>
+                                <div className="grid gap-4">
+                                    {recommendations.map((rec, idx) => (
+                                        <div key={idx} className="bg-white/5 border border-white/10 p-5 rounded-xl backdrop-blur-md hover:bg-white/10 transition-colors">
+                                            <h4 className="text-lg font-bold text-white mb-1">{rec.title}</h4>
+                                            <p className="text-gray-400 text-sm mb-3">"{rec.reason}"</p>
+                                            <button 
+                                                onClick={() => {
+                                                    setSearchQuery(rec.title);
+                                                    setActiveTab('discover'); // Or search logic
+                                                    // Trigger search immediately
+                                                    const tmdbLocale = getTMDBLocale(language);
+                                                    searchMulti(rec.title, tmdbLocale).then(results => {
+                                                        if (results.length > 0) {
+                                                            handleCardClick(results[0]);
+                                                        } else {
+                                                            // Fallback or alert
+                                                        }
+                                                    });
+                                                }}
+                                                className="text-xs font-bold text-indigo-400 hover:text-indigo-300 flex items-center gap-1 uppercase tracking-wider"
+                                            >
+                                                {t.findAdd} <Search size={12} />
+                                            </button>
                                         </div>
-                                        <button 
-                                            onClick={() => {
-                                                setSearchQuery(rec.title);
-                                                setIsSearchOpen(true);
-                                            }}
-                                            className="self-start sm:self-center px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg text-sm text-white border border-white/10 flex items-center gap-2"
-                                        >
-                                            <Search size={14} /> {t.findAdd}
-                                        </button>
-                                    </div>
-                                ))}
+                                    ))}
+                                </div>
                             </div>
                         )}
                     </div>
@@ -547,74 +585,8 @@ const App: React.FC = () => {
     return null;
   };
 
-  // Search Overlay
-  const renderSearch = () => {
-    if (!isSearchOpen) return null;
-    return (
-      <div className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-xl animate-fade-in flex flex-col">
-        <div className="p-4 md:p-8 max-w-6xl mx-auto w-full flex flex-col h-full">
-            <div className="flex items-center gap-4 mb-8">
-                <div className="relative flex-1">
-                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={24} />
-                    <input
-                        autoFocus
-                        type="text"
-                        placeholder={t.searchPlaceholder}
-                        className="w-full bg-white/10 border border-white/20 rounded-2xl py-4 pl-14 pr-4 text-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:bg-white/15 transition-all"
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                    />
-                    {isSearching && (
-                        <div className="absolute right-4 top-1/2 -translate-y-1/2">
-                            <Loader2 size={24} className="animate-spin text-gray-400" />
-                        </div>
-                    )}
-                </div>
-                <button 
-                    onClick={() => {
-                        setIsSearchOpen(false);
-                        setSearchQuery('');
-                        setSearchResults([]);
-                    }}
-                    className="p-4 rounded-full bg-white/5 hover:bg-white/10 text-white transition-colors"
-                >
-                    <X size={24} />
-                </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto no-scrollbar">
-                {searchResults.length > 0 ? (
-                    <div className={`grid gap-6 pb-20 ${getGridClass()}`}>
-                         {searchResults.map(item => (
-                            <GlassCard
-                                key={item.id}
-                                item={item}
-                                onAction={handleAction}
-                                onClick={handleCardClick}
-                                isCollected={collection.some(c => c.id === item.id)}
-                                currentStatus={collection.find(c => c.id === item.id)?.status}
-                                language={language}
-                            />
-                        ))}
-                    </div>
-                ) : searchQuery.length > 2 && !isSearching ? (
-                    <div className="text-center text-gray-500 mt-20">
-                        <p>{t.noResults} "{searchQuery}"</p>
-                    </div>
-                ) : (
-                    <div className="text-center text-gray-600 mt-20">
-                        <Search size={48} className="mx-auto mb-4 opacity-20" />
-                        <p>{t.typeToSearch}</p>
-                    </div>
-                )}
-            </div>
-        </div>
-      </div>
-    );
-  };
-
   return (
-    <div className="min-h-screen pb-20 pt-28 px-4 md:px-8 max-w-7xl mx-auto">
+    <div className="min-h-screen text-gray-100 font-sans selection:bg-indigo-500/30">
       <Navbar 
         activeTab={activeTab} 
         setActiveTab={setActiveTab} 
@@ -625,22 +597,37 @@ const App: React.FC = () => {
         user={user}
         language={language}
       />
-      
-      {renderContent()}
-      {renderSearch()}
 
-      {isSettingsOpen && (
-        <SettingsModal 
-            onClose={() => setIsSettingsOpen(false)}
-            collection={collection}
-            onImport={(data) => {
-                setCollection(data);
-            }}
-            language={language}
-            onLanguageChange={setLanguage}
+      <main className="pt-24 pb-12 px-4 md:px-8 max-w-7xl mx-auto">
+        {renderContent()}
+      </main>
+
+      {/* Media Details Modal */}
+      {selectedMedia && (
+        <MediaDetails 
+          item={selectedMedia} 
+          onClose={() => setSelectedMedia(null)} 
+          onAction={(item, action) => handleAction(item, action)}
+          currentStatus={collection.find(c => c.id === selectedMedia.id)?.status}
+          language={language}
         />
       )}
 
+      {/* Settings Modal */}
+      {isSettingsOpen && (
+        <SettingsModal 
+          onClose={() => setIsSettingsOpen(false)} 
+          collection={collection}
+          onImport={(data) => {
+              setCollection(data);
+              setIsSettingsOpen(false);
+          }}
+          language={language}
+          onLanguageChange={setLanguage}
+        />
+      )}
+
+      {/* Auth Modal */}
       {isAuthOpen && (
         <AuthModal 
             onClose={() => setIsAuthOpen(false)}
@@ -649,45 +636,60 @@ const App: React.FC = () => {
         />
       )}
 
-      {selectedMedia && (
-        <MediaDetails 
-          item={selectedMedia} 
-          onClose={() => setSelectedMedia(null)} 
-          onAction={handleAction}
-          currentStatus={collection.find(c => c.id === selectedMedia.id)?.status}
-          language={language}
-        />
+      {/* Search Overlay */}
+      {isSearchOpen && (
+        <div className="fixed inset-0 z-[60] bg-black/90 backdrop-blur-xl animate-fade-in">
+            <div className="max-w-3xl mx-auto pt-24 px-4">
+                <div className="relative mb-8">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input 
+                        type="text" 
+                        autoFocus
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder={t.searchPlaceholder}
+                        className="w-full bg-white/10 border border-white/10 rounded-2xl py-4 pl-12 pr-12 text-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+                    />
+                    <button 
+                        onClick={() => { setIsSearchOpen(false); setSearchQuery(''); setSearchResults([]); }}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"
+                    >
+                        <X size={24} />
+                    </button>
+                </div>
+
+                {isSearching ? (
+                    <div className="flex justify-center py-12">
+                        <Loader2 className="animate-spin text-indigo-500" size={32} />
+                    </div>
+                ) : searchResults.length > 0 ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 max-h-[70vh] overflow-y-auto no-scrollbar pb-20">
+                        {searchResults.map(item => (
+                            <GlassCard 
+                                key={item.id} 
+                                item={item} 
+                                onAction={handleAction} 
+                                onClick={(i) => { handleCardClick(i); setIsSearchOpen(false); }}
+                                isCollected={collection.some(c => c.id === item.id)}
+                                currentStatus={collection.find(c => c.id === item.id)?.status}
+                                language={language}
+                            />
+                        ))}
+                    </div>
+                ) : searchQuery.length > 2 ? (
+                    <div className="text-center text-gray-500 py-12">
+                        <p>{t.noResults} "{searchQuery}"</p>
+                    </div>
+                ) : (
+                    <div className="text-center text-gray-600 py-12">
+                        <p>{t.typeToSearch}</p>
+                    </div>
+                )}
+            </div>
+        </div>
       )}
     </div>
   );
 };
-
-const FilmIcon = ({ className }: { className?: string }) => (
-    <svg 
-      xmlns="http://www.w3.org/2000/svg" 
-      width="24" 
-      height="24" 
-      viewBox="0 0 24 24" 
-      fill="none" 
-      stroke="currentColor" 
-      strokeWidth="2" 
-      strokeLinecap="round" 
-      strokeLinejoin="round" 
-      className={className}
-    >
-      <rect width="18" height="18" x="3" y="3" rx="2" />
-      <path d="M7 3v18" />
-      <path d="M3 7.5h4" />
-      <path d="M3 12h18" />
-      <path d="M3 16.5h4" />
-      <path d="M17 3v18" />
-      <path d="M17 7.5h4" />
-      <path d="M17 16.5h4" />
-    </svg>
-)
-
-const Info = ({ className }: { className?: string }) => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
-)
 
 export default App;

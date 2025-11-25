@@ -1,4 +1,5 @@
-import { TMDBResponse, TMDBResult, MediaDetails, SeasonDetails } from '../types';
+
+import { TMDBResponse, TMDBResult, MediaDetails, SeasonDetails, DiscoverMediaType, OriginCountry } from '../types';
 
 const API_KEY = 'ef5d138e190f392876196b60d31eee5c'; // Provided by user
 const BASE_URL = 'https://api.themoviedb.org/3';
@@ -23,6 +24,47 @@ export const fetchTrending = async (language: string = 'en-US'): Promise<TMDBRes
     console.error(error);
     return [];
   }
+};
+
+export const fetchTrendingByType = async (
+  type: 'movie' | 'tv', 
+  timeWindow: 'day' | 'week' = 'day',
+  language: string = 'en-US'
+): Promise<TMDBResult[]> => {
+  try {
+    const response = await fetch(`${BASE_URL}/trending/${type}/${timeWindow}?api_key=${API_KEY}&language=${language}`);
+    if (!response.ok) throw new Error('Failed to fetch trending by type');
+    const data: TMDBResponse = await response.json();
+    return data.results.map(item => ({ ...item, media_type: type }));
+  } catch (error) {
+    console.error("Trending Fetch Error", error);
+    return [];
+  }
+};
+
+export const fetchDiscoverContent = async (
+    type: DiscoverMediaType, 
+    country: OriginCountry | null, 
+    language: string = 'en-US'
+): Promise<TMDBResult[]> => {
+    try {
+        let url = `${BASE_URL}/discover/${type}?api_key=${API_KEY}&language=${language}&sort_by=popularity.desc&vote_count.gte=100`;
+        
+        // Add country filter if selected
+        if (country) {
+            url += `&with_origin_country=${country}`;
+        }
+
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Failed to discover content');
+        const data: TMDBResponse = await response.json();
+        
+        // Inject media_type because discover endpoint doesn't always return it explicitly in the result object for mix
+        return data.results.map(item => ({ ...item, media_type: type }));
+    } catch (error) {
+        console.error("Discover Fetch Error", error);
+        return [];
+    }
 };
 
 export const searchMulti = async (query: string, language: string = 'en-US'): Promise<TMDBResult[]> => {

@@ -1,3 +1,4 @@
+
 import { Language } from '../types';
 
 export const translations = {
@@ -50,6 +51,18 @@ export const translations = {
     az: 'A-Z',
     view: 'View',
     
+    // Discover Filters
+    popular: 'Popular',
+    trendingToday: 'Trending Today',
+    filters: 'Filters',
+    allCountries: 'All Countries',
+    france: 'France',
+    southKorea: 'South Korea',
+    usa: 'United States',
+    uk: 'United Kingdom',
+    movies: 'Movies',
+    series: 'Series',
+    
     // Agenda
     upcomingAgenda: 'Upcoming Agenda',
     agendaSubtitle: 'All upcoming episodes and premieres from your watchlist.',
@@ -91,7 +104,8 @@ export const translations = {
     itemsCollected: 'items collected',
     startAdding: 'Start adding movies from Discover or Search!',
     trending: 'Trending Now',
-    trendingSub: 'Most popular movies and shows this week'
+    trendingSub: 'Most popular movies and shows this week',
+    trendingSubDay: 'The most watched movies and shows in the last 24h'
   },
   fr: {
     // Navbar
@@ -142,6 +156,18 @@ export const translations = {
     az: 'A-Z',
     view: 'Vue',
     
+    // Discover Filters
+    popular: 'Populaires',
+    trendingToday: 'Tendance Aujourd\'hui',
+    filters: 'Filtres',
+    allCountries: 'Tous pays',
+    france: 'France',
+    southKorea: 'Corée du Sud',
+    usa: 'États-Unis',
+    uk: 'Angleterre',
+    movies: 'Films',
+    series: 'Séries',
+    
     // Agenda
     upcomingAgenda: 'Agenda à venir',
     agendaSubtitle: 'Tous les prochains épisodes et premières de votre liste.',
@@ -183,7 +209,8 @@ export const translations = {
     itemsCollected: 'éléments collectés',
     startAdding: 'Commencez à ajouter des films depuis Découvrir ou Recherche !',
     trending: 'Tendances actuelles',
-    trendingSub: 'Films et séries populaires cette semaine'
+    trendingSub: 'Films et séries populaires cette semaine',
+    trendingSubDay: 'Les films et séries les plus regardés ces dernières 24h'
   }
 };
 

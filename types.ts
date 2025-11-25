@@ -1,3 +1,4 @@
+
 export interface TMDBResult {
   id: number;
   title?: string;
@@ -20,6 +21,13 @@ export interface TMDBResponse {
 
 export type CollectionStatus = 'seen' | 'watchlist';
 export type Language = 'en' | 'fr';
+export type OriginCountry = 'FR' | 'KR' | 'US' | 'GB';
+export type DiscoverMediaType = 'movie' | 'tv';
+
+export interface DiscoverFilter {
+  type: DiscoverMediaType;
+  country: OriginCountry | null;
+}
 
 export interface AgendaEvent {
   date: string; // YYYY-MM-DD
